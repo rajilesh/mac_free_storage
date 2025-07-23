@@ -44,6 +44,7 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
   int _totalDirectorySize = 0;
   bool _isCalculatingTotalSize = false;
   bool _hasPermissionIssues = false;
+  bool _showSystemDirectories = false; // Toggle for showing system directories
   Timer? _uiUpdateTimer;
   
   // Static cache to persist across widget rebuilds and navigation
@@ -87,6 +88,14 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
       // Use a more robust approach to list directory contents
       await for (final entity
           in directory.list(recursive: false, followLinks: false)) {
+        // Skip system-protected directories in root to avoid permission issues (unless user wants to see them)
+        if ((widget.folderPath == null || widget.folderPath == '/') &&
+            !_showSystemDirectories) {
+          if (_isSystemProtectedDirectory(entity.path)) {
+            print('Skipping system-protected directory: ${entity.path}');
+            continue;
+          }
+        }
         files.add(entity);
       }
 
@@ -779,6 +788,20 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
       '/Library/Logs',
     ];
 
+    // For root level, also check these specific directories
+    if (path == '/System' ||
+        path == '/private' ||
+        path == '/usr' ||
+        path == '/dev' ||
+        path == '/Library' ||
+        path == '/bin' ||
+        path == '/sbin' ||
+        path == '/var' ||
+        path == '/tmp' ||
+        path == '/etc') {
+      return true;
+    }
+
     return protectedDirs.any((dir) => path.startsWith(dir));
   }
 
@@ -873,6 +896,26 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
               )
             : null,
         actions: [
+          // Toggle for system directories (only show in root)
+          if (widget.folderPath == null || widget.folderPath == '/')
+            IconButton(
+              icon: Icon(
+                _showSystemDirectories
+                    ? Icons.visibility
+                    : Icons.visibility_off,
+                color: _showSystemDirectories ? Colors.blue : Colors.grey,
+              ),
+              onPressed: () {
+                setState(() {
+                  _showSystemDirectories = !_showSystemDirectories;
+                });
+                // Refresh the folder contents with new setting
+                _getFolderContents();
+              },
+              tooltip: _showSystemDirectories
+                  ? 'Hide System Directories'
+                  : 'Show System Directories (requires Full Disk Access)',
+            ),
           if (_hasPermissionIssues)
             IconButton(
               icon: const Icon(Icons.warning, color: Colors.orange),
