@@ -45,6 +45,11 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
   bool _isCalculatingTotalSize = false;
   bool _hasPermissionIssues = false;
   Timer? _uiUpdateTimer;
+  
+  // Static cache to persist across widget rebuilds and navigation
+  static final Map<String, int> _globalFolderSizeCache = {};
+  static final Map<String, int> _globalFileSizeCache = {};
+  static final Map<String, String> _globalErrorCache = {};
 
   @override
   void initState() {
@@ -101,28 +106,80 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
         _files = files;
       });
 
-      // Initialize calculating status for all items
+      // Initialize calculating status for all items, but check cache first
       for (final file in files) {
-        _calculatingStatus[file.path] = true;
+        if (file is Directory) {
+          // Check if we have cached data for this directory
+          if (_globalFolderSizeCache.containsKey(file.path)) {
+            final cachedSize = _globalFolderSizeCache[file.path]!;
+            _folderSizes[file.path] = cachedSize;
+            _calculatingStatus[file.path] = false;
+            if (cachedSize < 0) {
+              _errorMessages[file.path] =
+                  _globalErrorCache[file.path] ?? "Access denied";
+              _hasPermissionIssues = true;
+            }
+          } else {
+            _calculatingStatus[file.path] = true;
+          }
+        } else if (file is File) {
+          // Check if we have cached data for this file
+          if (_globalFileSizeCache.containsKey(file.path)) {
+            final cachedSize = _globalFileSizeCache[file.path]!;
+            _fileSizes[file.path] = cachedSize;
+            _calculatingStatus[file.path] = false;
+            if (cachedSize < 0) {
+              _errorMessages[file.path] =
+                  _globalErrorCache[file.path] ?? "Access denied";
+              _hasPermissionIssues = true;
+            }
+          } else {
+            _calculatingStatus[file.path] = true;
+          }
+        } else {
+          _calculatingStatus[file.path] = true;
+        }
       }
 
-      // Immediately sort by size (will show 0 sizes initially, then resort as calculated)
+      // Immediately sort by size (will show cached sizes immediately, then resort as calculated)
       _sortFilesBySize();
 
       // Separate files and directories for different handling
       final fileEntities = files.whereType<File>().toList();
       final directoryEntities = files.whereType<Directory>().toList();
 
-      // Calculate file sizes first (these are quick)
-      final fileFutures =
-          fileEntities.map((file) => _calculateAndStoreFileSize(file));
+      // Filter out already cached items
+      final uncachedFiles = fileEntities
+          .where((file) => !_globalFileSizeCache.containsKey(file.path))
+          .toList();
+      final uncachedDirectories = directoryEntities
+          .where((dir) => !_globalFolderSizeCache.containsKey(dir.path))
+          .toList();
 
-      // Start directory calculations in parallel (these take longer)
+      // If everything is cached, we still need to ensure proper sorting
+      if (uncachedFiles.isEmpty && uncachedDirectories.isEmpty) {
+        // All data is cached, update total and do final sort
+        _updateTotalSizeAndUI();
+        return;
+      }
+
+      // Calculate file sizes first (these are quick) - only for uncached files
+      final fileFutures =
+          uncachedFiles.map((file) => _calculateAndStoreFileSize(file));
+
+      // Start directory calculations in parallel (these take longer) - only for uncached directories
       final directoryFutures =
-          directoryEntities.map((dir) => _calculateAndStoreFolderSize(dir));
+          uncachedDirectories.map((dir) => _calculateAndStoreFolderSize(dir));
 
       // Wait for all calculations to complete
       await Future.wait([...fileFutures, ...directoryFutures]);
+      
+      // Print cache statistics for debugging
+      final cacheStats = getCacheStats();
+      print(
+          'Cache stats - Folders: ${cacheStats['folders']}, Files: ${cacheStats['files']}, Errors: ${cacheStats['errors']}');
+      print(
+          'Calculated this session - Files: ${uncachedFiles.length}, Directories: ${uncachedDirectories.length}');
       
       // Final update when all calculations are complete
       if (mounted) {
@@ -158,7 +215,28 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
     _uiUpdateTimer = null;
   }
 
+  // Method to clear cache if needed (could be useful for debugging or settings)
+  static void clearCache() {
+    _globalFolderSizeCache.clear();
+    _globalFileSizeCache.clear();
+    _globalErrorCache.clear();
+  }
+
+  // Method to get cache statistics
+  static Map<String, int> getCacheStats() {
+    return {
+      'folders': _globalFolderSizeCache.length,
+      'files': _globalFileSizeCache.length,
+      'errors': _globalErrorCache.length,
+    };
+  }
+
   Future<void> _calculateAndStoreFolderSize(Directory directory) async {
+    // Check if already cached
+    if (_globalFolderSizeCache.containsKey(directory.path)) {
+      return; // Already calculated and cached
+    }
+
     try {
       // Check if directory is accessible first
       try {
@@ -175,7 +253,9 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
           _errorMessages[directory.path] = "Permission denied";
           _hasPermissionIssues = true;
         });
-        // Don't call _updateTotalSize() here - let timer handle it
+        // Cache the error result
+        _globalFolderSizeCache[directory.path] = -1;
+        _globalErrorCache[directory.path] = "Permission denied";
         return;
       }
 
@@ -189,7 +269,12 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
           _hasPermissionIssues = true;
         }
       });
-      // Don't call _updateTotalSize() here - let timer handle it
+      
+      // Cache the result
+      _globalFolderSizeCache[directory.path] = size;
+      if (size < 0) {
+        _globalErrorCache[directory.path] = "Access denied";
+      }
     } on PathAccessException catch (e) {
       // Handle PathAccessException specifically (common on macOS)
       if (!_isExpectedPermissionError(directory.path, e.toString())) {
@@ -203,7 +288,9 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
         _errorMessages[directory.path] = "Permission denied";
         _hasPermissionIssues = true;
       });
-      // Don't call _updateTotalSize() here - let timer handle it
+      // Cache the error result
+      _globalFolderSizeCache[directory.path] = -1;
+      _globalErrorCache[directory.path] = "Permission denied";
     } on FileSystemException catch (e) {
       // Handle FileSystemException (including subclasses)
       if (!_isExpectedPermissionError(directory.path, e.toString())) {
@@ -217,7 +304,9 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
         _errorMessages[directory.path] = "Permission denied";
         _hasPermissionIssues = true;
       });
-      // Don't call _updateTotalSize() here - let timer handle it
+      // Cache the error result
+      _globalFolderSizeCache[directory.path] = -1;
+      _globalErrorCache[directory.path] = "Permission denied";
     } catch (e) {
       // Handle any other type of exception
       if (!_isExpectedPermissionError(directory.path, e.toString())) {
@@ -231,11 +320,18 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
         _errorMessages[directory.path] = "Permission denied";
         _hasPermissionIssues = true;
       });
-      // Don't call _updateTotalSize() here - let timer handle it
+      // Cache the error result
+      _globalFolderSizeCache[directory.path] = -1;
+      _globalErrorCache[directory.path] = "Permission denied";
     }
   }
 
   Future<void> _calculateAndStoreFileSize(File file) async {
+    // Check if already cached
+    if (_globalFileSizeCache.containsKey(file.path)) {
+      return; // Already calculated and cached
+    }
+
     try {
       // For files, we can get size instantly using sync method for better performance
       int size;
@@ -251,7 +347,9 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
         _fileSizes[file.path] = size;
         _calculatingStatus[file.path] = false;
       });
-      // Don't call _updateTotalSize() here - let timer handle it
+      
+      // Cache the result
+      _globalFileSizeCache[file.path] = size;
     } on FileSystemException catch (e) {
       print('Error calculating size for file: ${file.path}, error: $e');
       if (!mounted) return;
@@ -261,7 +359,10 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
         _errorMessages[file.path] = "Permission denied";
         _hasPermissionIssues = true;
       });
-      // Don't call _updateTotalSize() here - let timer handle it
+      
+      // Cache the error result
+      _globalFileSizeCache[file.path] = -1;
+      _globalErrorCache[file.path] = "Permission denied";
     }
   }
 
@@ -379,20 +480,36 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
   void _sortFilesBySize() {
     setState(() {
       _files.sort((a, b) {
-        // Get sizes for comparison
+        // Get sizes for comparison - check both local and cached data
         int sizeA = 0;
         int sizeB = 0;
 
         if (a is Directory) {
           sizeA = _folderSizes[a.path] ?? 0;
+          // If not in local map, check cache
+          if (sizeA == 0 && _globalFolderSizeCache.containsKey(a.path)) {
+            sizeA = _globalFolderSizeCache[a.path]!;
+          }
         } else if (a is File) {
           sizeA = _fileSizes[a.path] ?? 0;
+          // If not in local map, check cache
+          if (sizeA == 0 && _globalFileSizeCache.containsKey(a.path)) {
+            sizeA = _globalFileSizeCache[a.path]!;
+          }
         }
 
         if (b is Directory) {
           sizeB = _folderSizes[b.path] ?? 0;
+          // If not in local map, check cache
+          if (sizeB == 0 && _globalFolderSizeCache.containsKey(b.path)) {
+            sizeB = _globalFolderSizeCache[b.path]!;
+          }
         } else if (b is File) {
           sizeB = _fileSizes[b.path] ?? 0;
+          // If not in local map, check cache
+          if (sizeB == 0 && _globalFileSizeCache.containsKey(b.path)) {
+            sizeB = _globalFileSizeCache[b.path]!;
+          }
         }
 
         // Handle negative sizes (errors) - put them at the end
