@@ -141,7 +141,7 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
         }
       }
 
-      // Immediately sort by size (will show cached sizes immediately, then resort as calculated)
+      // Sort immediately based on cached data
       _sortFilesBySize();
 
       // Separate files and directories for different handling
@@ -159,6 +159,9 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
       // If everything is cached, we still need to ensure proper sorting
       if (uncachedFiles.isEmpty && uncachedDirectories.isEmpty) {
         // All data is cached, update total and do final sort
+        print('All data cached - doing immediate sort and total calculation');
+        _stopUIUpdateTimer();
+        _sortFilesBySize(); // Sort immediately when all data is cached
         _updateTotalSizeAndUI();
         return;
       }
@@ -180,6 +183,16 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
           'Cache stats - Folders: ${cacheStats['folders']}, Files: ${cacheStats['files']}, Errors: ${cacheStats['errors']}');
       print(
           'Calculated this session - Files: ${uncachedFiles.length}, Directories: ${uncachedDirectories.length}');
+      
+      // Debug: Print Applications folder size if it exists
+      if (_globalFolderSizeCache.containsKey('/Applications')) {
+        print(
+            'Applications folder cached size: ${_formatBytes(_globalFolderSizeCache['/Applications']!, 2)}');
+      }
+      if (_folderSizes.containsKey('/Applications')) {
+        print(
+            'Applications folder local size: ${_formatBytes(_folderSizes['/Applications']!, 2)}');
+      }
       
       // Final update when all calculations are complete
       if (mounted) {
@@ -466,13 +479,13 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
       _isCalculatingTotalSize = isStillCalculating;
     });
 
-    // Sort by size when data changes significantly or when calculation is finished
+    // Sort regularly during calculation to show updated order as sizes are computed
     _sortFilesBySize();
 
-    // If we just finished calculating (was calculating but now not), stop the timer
+    // When calculation is finished, stop the timer and do a final sort
     if (wasCalculating && !isStillCalculating) {
       _stopUIUpdateTimer();
-      // Do a final update and sort
+      print('All calculations complete - doing final sort');
       _sortFilesBySize();
     }
   }
@@ -483,33 +496,59 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
         // Get sizes for comparison - check both local and cached data
         int sizeA = 0;
         int sizeB = 0;
+        bool isCalculatingA = _calculatingStatus[a.path] ?? false;
+        bool isCalculatingB = _calculatingStatus[b.path] ?? false;
 
+        // Get size for item A
         if (a is Directory) {
-          sizeA = _folderSizes[a.path] ?? 0;
-          // If not in local map, check cache
-          if (sizeA == 0 && _globalFolderSizeCache.containsKey(a.path)) {
+          // First check local map
+          if (_folderSizes.containsKey(a.path)) {
+            sizeA = _folderSizes[a.path]!;
+          } else if (_globalFolderSizeCache.containsKey(a.path)) {
+            // If not in local, check global cache
             sizeA = _globalFolderSizeCache[a.path]!;
+          } else if (_partialSizes.containsKey(a.path)) {
+            // Use partial size if available
+            sizeA = _partialSizes[a.path]!;
           }
         } else if (a is File) {
-          sizeA = _fileSizes[a.path] ?? 0;
-          // If not in local map, check cache
-          if (sizeA == 0 && _globalFileSizeCache.containsKey(a.path)) {
+          // First check local map
+          if (_fileSizes.containsKey(a.path)) {
+            sizeA = _fileSizes[a.path]!;
+          } else if (_globalFileSizeCache.containsKey(a.path)) {
+            // If not in local, check global cache
             sizeA = _globalFileSizeCache[a.path]!;
           }
         }
 
+        // Get size for item B
         if (b is Directory) {
-          sizeB = _folderSizes[b.path] ?? 0;
-          // If not in local map, check cache
-          if (sizeB == 0 && _globalFolderSizeCache.containsKey(b.path)) {
+          // First check local map
+          if (_folderSizes.containsKey(b.path)) {
+            sizeB = _folderSizes[b.path]!;
+          } else if (_globalFolderSizeCache.containsKey(b.path)) {
+            // If not in local, check global cache
             sizeB = _globalFolderSizeCache[b.path]!;
+          } else if (_partialSizes.containsKey(b.path)) {
+            // Use partial size if available
+            sizeB = _partialSizes[b.path]!;
           }
         } else if (b is File) {
-          sizeB = _fileSizes[b.path] ?? 0;
-          // If not in local map, check cache
-          if (sizeB == 0 && _globalFileSizeCache.containsKey(b.path)) {
+          // First check local map
+          if (_fileSizes.containsKey(b.path)) {
+            sizeB = _fileSizes[b.path]!;
+          } else if (_globalFileSizeCache.containsKey(b.path)) {
+            // If not in local, check global cache
             sizeB = _globalFileSizeCache[b.path]!;
           }
+        }
+
+        // Debug print for troubleshooting Applications folder specifically - only during final sort
+        if ((a.path.contains('Applications') ||
+                b.path.contains('Applications')) &&
+            !(_calculatingStatus.values.any((calculating) => calculating))) {
+          print(
+              'Final Sort: ${a.path.split('/').last} (${_formatBytes(sizeA, 2)}) vs ${b.path.split('/').last} (${_formatBytes(sizeB, 2)})');
         }
 
         // Handle negative sizes (errors) - put them at the end
@@ -518,6 +557,12 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
         if (sizeA < 0 && sizeB < 0) {
           // Both have errors, sort by name
           return a.path.toLowerCase().compareTo(b.path.toLowerCase());
+        }
+
+        // If both are still calculating and have zero or partial sizes,
+        // maintain original order to avoid constant re-sorting
+        if (isCalculatingA && isCalculatingB && sizeA == 0 && sizeB == 0) {
+          return 0; // Keep original order
         }
 
         // Sort by size descending (largest first)
