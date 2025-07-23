@@ -106,8 +106,11 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
 
       // Wait for all calculations to complete
       await Future.wait([...fileFutures, ...directoryFutures]);
-    } on FileSystemException catch (e) {
-      print('Error accessing directory: ${directory.path}, error: $e');
+    } catch (e) {
+      // Handle any type of exception during directory listing
+      if (!_isExpectedPermissionError(directory.path, e.toString())) {
+        print('Error accessing directory: ${directory.path}, error: $e');
+      }
       if (!mounted) return;
       setState(() {
         _files = [];
@@ -115,15 +118,6 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
         _isCalculatingTotalSize = false;
       });
       _showPermissionDialog(directory.path, e.toString());
-    } catch (e) {
-      print(
-          'Unexpected error accessing directory: ${directory.path}, error: $e');
-      if (!mounted) return;
-      setState(() {
-        _files = [];
-        _hasPermissionIssues = true;
-        _isCalculatingTotalSize = false;
-      });
     }
   }
 
@@ -159,9 +153,12 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
         }
       });
       _updateTotalSize();
-    } on FileSystemException catch (e) {
-      print(
-          'Error calculating size for directory: ${directory.path}, error: $e');
+    } catch (e) {
+      // Handle any type of exception (FileSystemException, PathAccessException, etc.)
+      if (!_isExpectedPermissionError(directory.path, e.toString())) {
+        print(
+            'Error calculating size for directory: ${directory.path}, error: $e');
+      }
       if (!mounted) return;
       setState(() {
         _folderSizes[directory.path] = -1; // Indicate error
@@ -216,10 +213,13 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
             final fileSize = await entity.length();
             totalSize += fileSize;
             accessibleFiles++;
-          } on FileSystemException catch (e) {
-            print('Error reading file length: ${entity.path}, error: $e');
+          } on FileSystemException {
+            // Don't print permission errors for individual files as they're expected
             hasPermissionError = true;
             // Continue processing other files instead of failing completely
+          } catch (e) {
+            // Handle other unexpected errors
+            hasPermissionError = true;
           }
         }
       }
@@ -231,8 +231,18 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
       }
       return totalSize;
     } on FileSystemException catch (e) {
-      print(
-          'Error listing directory for size calculation: ${directory.path}, error: $e');
+      // Only print errors for specific cases, not common permission denials
+      if (!_isExpectedPermissionError(directory.path, e.toString())) {
+        print(
+            'Error listing directory for size calculation: ${directory.path}, error: $e');
+      }
+      return -1;
+    } catch (e) {
+      // Handle other types of errors (like PathAccessException)
+      if (!_isExpectedPermissionError(directory.path, e.toString())) {
+        print(
+            'Error listing directory for size calculation: ${directory.path}, error: $e');
+      }
       return -1;
     }
   }
@@ -453,6 +463,45 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
     ];
 
     return protectedDirs.any((dir) => path.startsWith(dir));
+  }
+
+  bool _isExpectedPermissionError(String path, String errorMessage) {
+    // Common directories and patterns that we expect to have permission issues
+    const expectedPaths = [
+      '/Volumes',
+      '/dev',
+      '/Library/Application Support/Apple',
+      '/Library/Application Support/com.apple',
+      '/System/Library',
+      '/Applications/flutter',
+      '/Applications/Xcode',
+      '/private',
+      '/usr',
+      '/bin',
+      '/sbin',
+      '/var',
+      '/tmp',
+      '/etc',
+    ];
+
+    // Check if the path starts with any expected problematic directory
+    final isExpectedPath = expectedPaths.any((dir) => path.startsWith(dir));
+
+    // Also check for app bundles and frameworks which commonly have permission issues
+    final isAppBundle = path.contains('.app/') ||
+        path.contains('.framework/') ||
+        path.contains('.xcframework/');
+
+    // Check for mounted volumes
+    final isMountedVolume = path.startsWith('/Volumes/');
+
+    // Check for common permission error messages
+    final isPermissionError = errorMessage.contains('Permission denied') ||
+        errorMessage.contains('Operation not permitted') ||
+        errorMessage.contains('PathAccessException');
+
+    return (isExpectedPath || isAppBundle || isMountedVolume) &&
+        isPermissionError;
   }
 
   @override
@@ -690,7 +739,13 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
                         ),
                     ],
                   ),
-                  onTap: () => _openInFinder(file.path),
+                  onTap: () {
+                    if (isDirectory && !hasError) {
+                      _openFolder(file.path);
+                    } else {
+                      _openInFinder(file.path);
+                    }
+                  },
                 );
               },
             ),
