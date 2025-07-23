@@ -75,6 +75,7 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
         files.add(entity);
       }
 
+      // Initial sort by type (directories first), then by name
       files.sort((a, b) {
         if (a is Directory && b is! Directory) {
           return -1;
@@ -288,11 +289,57 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
       if (size > 0) total += size;
     }
 
+    final wasCalculating = _isCalculatingTotalSize;
+    final isStillCalculating =
+        _calculatingStatus.values.any((calculating) => calculating);
+
     setState(() {
       _totalDirectorySize = total;
-      // Only mark as not calculating when all items are done
-      _isCalculatingTotalSize =
-          _calculatingStatus.values.any((calculating) => calculating);
+      _isCalculatingTotalSize = isStillCalculating;
+    });
+
+    // If we just finished calculating (was calculating but now not), sort by size
+    if (wasCalculating && !isStillCalculating) {
+      _sortFilesBySize();
+    }
+  }
+
+  void _sortFilesBySize() {
+    setState(() {
+      _files.sort((a, b) {
+        // Get sizes for comparison
+        int sizeA = 0;
+        int sizeB = 0;
+
+        if (a is Directory) {
+          sizeA = _folderSizes[a.path] ?? 0;
+        } else if (a is File) {
+          sizeA = _fileSizes[a.path] ?? 0;
+        }
+
+        if (b is Directory) {
+          sizeB = _folderSizes[b.path] ?? 0;
+        } else if (b is File) {
+          sizeB = _fileSizes[b.path] ?? 0;
+        }
+
+        // Handle negative sizes (errors) - put them at the end
+        if (sizeA < 0 && sizeB >= 0) return 1;
+        if (sizeB < 0 && sizeA >= 0) return -1;
+        if (sizeA < 0 && sizeB < 0) {
+          // Both have errors, sort by name
+          return a.path.toLowerCase().compareTo(b.path.toLowerCase());
+        }
+
+        // Sort by size descending (largest first)
+        final sizeComparison = sizeB.compareTo(sizeA);
+        if (sizeComparison != 0) {
+          return sizeComparison;
+        }
+
+        // If sizes are equal, sort by name
+        return a.path.toLowerCase().compareTo(b.path.toLowerCase());
+      });
     });
   }
 
@@ -669,6 +716,23 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
                             fontSize: 12,
                             color: Colors.orange.shade700,
                           ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ] else if (!_isCalculatingTotalSize) ...[
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Icon(Icons.sort_by_alpha,
+                          size: 16, color: Colors.blue.shade600),
+                      const SizedBox(width: 4),
+                      Text(
+                        'Sorted by size (largest first)',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.blue.shade600,
+                          fontStyle: FontStyle.italic,
                         ),
                       ),
                     ],
