@@ -96,6 +96,9 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
         _calculatingStatus[file.path] = true;
       }
 
+      // Immediately sort by size (will show 0 sizes initially, then resort as calculated)
+      _sortFilesBySize();
+
       // Separate files and directories for different handling
       final fileEntities = files.whereType<File>().toList();
       final directoryEntities = files.whereType<Directory>().toList();
@@ -143,6 +146,8 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
           _hasPermissionIssues = true;
         });
         _updateTotalSize();
+        // Resort immediately after marking error
+        _sortFilesBySize();
         return;
       }
 
@@ -157,6 +162,8 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
         }
       });
       _updateTotalSize();
+      // Resort immediately after calculating folder size
+      _sortFilesBySize();
     } catch (e) {
       // Handle any type of exception (FileSystemException, PathAccessException, etc.)
       if (!_isExpectedPermissionError(directory.path, e.toString())) {
@@ -171,6 +178,8 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
         _hasPermissionIssues = true;
       });
       _updateTotalSize();
+      // Resort immediately after marking error
+      _sortFilesBySize();
     }
   }
 
@@ -191,6 +200,8 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
         _calculatingStatus[file.path] = false;
       });
       _updateTotalSize();
+      // Resort immediately after calculating each file size
+      _sortFilesBySize();
     } on FileSystemException catch (e) {
       print('Error calculating size for file: ${file.path}, error: $e');
       if (!mounted) return;
@@ -228,6 +239,11 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
                 _partialSizes[dirPath] = totalSize;
               });
               _updateTotalSize();
+              
+              // Resort every 50 files to avoid too frequent UI updates
+              if (accessibleFiles % 50 == 0) {
+                _sortFilesBySize();
+              }
             }
 
             // Add a small delay to make the progress visible for small directories
