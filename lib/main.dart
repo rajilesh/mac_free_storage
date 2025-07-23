@@ -39,6 +39,8 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
   final Map<String, int> _fileSizes = {};
   final Map<String, bool> _calculatingStatus = {};
   final Map<String, String> _errorMessages = {};
+  final Map<String, int> _partialSizes =
+      {}; // Track current progress during calculation
   int _totalDirectorySize = 0;
   bool _isCalculatingTotalSize = false;
   bool _hasPermissionIssues = false;
@@ -58,6 +60,7 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
       _fileSizes.clear();
       _calculatingStatus.clear();
       _errorMessages.clear();
+      _partialSizes.clear();
     });
 
     final directory = widget.folderPath != null
@@ -205,6 +208,10 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
       int totalSize = 0;
       bool hasPermissionError = false;
       int accessibleFiles = 0;
+      final String dirPath = directory.path;
+
+      // Initialize partial size
+      _partialSizes[dirPath] = 0;
 
       await for (final entity
           in directory.list(recursive: true, followLinks: false)) {
@@ -213,6 +220,19 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
             final fileSize = await entity.length();
             totalSize += fileSize;
             accessibleFiles++;
+            
+            // Update partial size and trigger UI update
+            if (mounted) {
+              setState(() {
+                _partialSizes[dirPath] = totalSize;
+              });
+              _updateTotalSize();
+            }
+
+            // Add a small delay to make the progress visible for small directories
+            if (accessibleFiles % 10 == 0) {
+              await Future.delayed(const Duration(milliseconds: 1));
+            }
           } on FileSystemException {
             // Don't print permission errors for individual files as they're expected
             hasPermissionError = true;
@@ -223,6 +243,9 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
           }
         }
       }
+
+      // Clear partial size when done
+      _partialSizes.remove(dirPath);
 
       // If we have some accessible files, return the partial size
       // Only return -1 if we couldn't access anything at all
@@ -259,6 +282,11 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
     for (final size in _fileSizes.values) {
       if (size > 0) total += size;
     }
+    
+    // Add partial sizes for folders still being calculated
+    for (final size in _partialSizes.values) {
+      if (size > 0) total += size;
+    }
 
     setState(() {
       _totalDirectorySize = total;
@@ -270,6 +298,7 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
 
   void _showPermissionDialog(String path, String error) {
     final isSystemDir = _isSystemProtectedDirectory(path);
+    final permissionType = _getPermissionType(path);
     
     showDialog(
       context: context,
@@ -290,53 +319,60 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
               const SizedBox(height: 8),
               Text('Error: $error'),
               const SizedBox(height: 16),
-              if (isSystemDir) ...[
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.blue.shade50,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.blue.shade200),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Icon(Icons.info_outline,
-                              size: 16, color: Colors.blue.shade600),
-                          const SizedBox(width: 4),
-                          Text(
-                            'System Directory',
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              color: Colors.blue.shade600,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 4),
-                      const Text(
-                        'This is a protected system directory. Access may be restricted even with Full Disk Access.',
-                        style: TextStyle(fontSize: 12),
-                      ),
-                    ],
-                  ),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.blue.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.blue.shade200),
                 ),
-                const SizedBox(height: 12),
-              ],
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.info_outline,
+                            size: 16, color: Colors.blue.shade600),
+                        const SizedBox(width: 4),
+                        Text(
+                          'Required Permission: $permissionType',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: Colors.blue.shade600,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      isSystemDir
+                          ? 'This is a protected system directory. Access may be restricted even with Full Disk Access.'
+                          : 'This directory requires specific permissions to access.',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
               const Text(
                 'To allow this app to access files and folders:',
                 style: TextStyle(fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 8),
-              const Text(
-                '1. Open System Preferences → Security & Privacy\n'
-                '2. Click the Privacy tab\n'
-                '3. Select "Full Disk Access" from the list\n'
-                '4. Click the lock to make changes\n'
-                '5. Add this application to the list',
-                style: TextStyle(fontSize: 14),
+              Text(
+                permissionType == 'Full Disk Access'
+                    ? '1. Open System Preferences → Security & Privacy\n'
+                        '2. Click the Privacy tab\n'
+                        '3. Select "Full Disk Access" from the list\n'
+                        '4. Click the lock to make changes\n'
+                        '5. Add this application to the list'
+                    : '1. Open System Preferences → Security & Privacy\n'
+                        '2. Click the Privacy tab\n'
+                        '3. Select "$permissionType" from the list\n'
+                        '4. Click the lock to make changes\n'
+                        '5. Add this application to the list\n\n'
+                        'Or enable "Full Disk Access" for complete access.',
+                style: const TextStyle(fontSize: 14),
               ),
             ],
           ),
@@ -484,8 +520,25 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
       '/etc',
     ];
 
+    // User directories that require special permissions
+    const userProtectedPaths = [
+      '/Users/',
+      'Desktop/',
+      'Documents/',
+      'Downloads/',
+      'Pictures/',
+      'Movies/',
+      'Music/',
+      'Library/',
+      '.Trash/',
+    ];
+
     // Check if the path starts with any expected problematic directory
     final isExpectedPath = expectedPaths.any((dir) => path.startsWith(dir));
+
+    // Check for user protected directories
+    final isUserProtectedPath =
+        userProtectedPaths.any((dir) => path.contains(dir));
 
     // Also check for app bundles and frameworks which commonly have permission issues
     final isAppBundle = path.contains('.app/') ||
@@ -500,8 +553,27 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
         errorMessage.contains('Operation not permitted') ||
         errorMessage.contains('PathAccessException');
 
-    return (isExpectedPath || isAppBundle || isMountedVolume) &&
+    return (isExpectedPath ||
+            isAppBundle ||
+            isMountedVolume ||
+            isUserProtectedPath) &&
         isPermissionError;
+  }
+
+  String _getPermissionType(String path) {
+    if (path.contains('/Desktop/')) return 'Desktop Access';
+    if (path.contains('/Documents/')) return 'Documents Access';
+    if (path.contains('/Downloads/')) return 'Downloads Access';
+    if (path.contains('/Pictures/')) return 'Photos Access';
+    if (path.contains('/Movies/') || path.contains('/Music/'))
+      return 'Media Access';
+    if (path.contains('/Library/')) return 'Library Access';
+    if (path.startsWith('/System') ||
+        path.startsWith('/usr') ||
+        path.startsWith('/private')) {
+      return 'Full Disk Access';
+    }
+    return 'File Access';
   }
 
   @override
@@ -568,7 +640,8 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
                                 ),
                               ),
                               const SizedBox(width: 8),
-                              const Text('Calculating...'),
+                              Text(
+                                  '${_formatBytes(_totalDirectorySize, 2)}...'),
                             ],
                           )
                         : Text(
@@ -619,6 +692,8 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
                   sizeText = _errorMessages[file.path]!;
                 } else if (isDirectory) {
                   final size = _folderSizes[file.path];
+                  final partialSize = _partialSizes[file.path];
+                  
                   if (size != null) {
                     if (size >= 0) {
                       sizeText = _formatBytes(size, 2);
@@ -630,6 +705,11 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
                       sizeText = _formatBytes(
                           size, 2); // This will show "Access denied"
                     }
+                  } else if (isCalculating &&
+                      partialSize != null &&
+                      partialSize > 0) {
+                    // Show current progress instead of "Computing..."
+                    sizeText = '${_formatBytes(partialSize, 2)}...';
                   } else if (isCalculating) {
                     sizeText = 'Computing...';
                   } else {
