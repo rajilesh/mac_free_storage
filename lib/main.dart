@@ -44,11 +44,18 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
   int _totalDirectorySize = 0;
   bool _isCalculatingTotalSize = false;
   bool _hasPermissionIssues = false;
+  Timer? _uiUpdateTimer;
 
   @override
   void initState() {
     super.initState();
     _getFolderContents();
+  }
+
+  @override
+  void dispose() {
+    _uiUpdateTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _getFolderContents() async {
@@ -62,6 +69,9 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
       _errorMessages.clear();
       _partialSizes.clear();
     });
+
+    // Start the UI update timer
+    _startUIUpdateTimer();
 
     final directory = widget.folderPath != null
         ? Directory(widget.folderPath!)
@@ -113,6 +123,12 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
 
       // Wait for all calculations to complete
       await Future.wait([...fileFutures, ...directoryFutures]);
+      
+      // Final update when all calculations are complete
+      if (mounted) {
+        _stopUIUpdateTimer();
+        _updateTotalSizeAndUI();
+      }
     } catch (e) {
       // Handle any type of exception during directory listing
       if (!_isExpectedPermissionError(directory.path, e.toString())) {
@@ -126,6 +142,20 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
       });
       _showPermissionDialog(directory.path, e.toString());
     }
+  }
+
+  void _startUIUpdateTimer() {
+    _uiUpdateTimer?.cancel();
+    _uiUpdateTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (mounted) {
+        _updateTotalSizeAndUI();
+      }
+    });
+  }
+
+  void _stopUIUpdateTimer() {
+    _uiUpdateTimer?.cancel();
+    _uiUpdateTimer = null;
   }
 
   Future<void> _calculateAndStoreFolderSize(Directory directory) async {
@@ -145,9 +175,7 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
           _errorMessages[directory.path] = "Permission denied";
           _hasPermissionIssues = true;
         });
-        _updateTotalSize();
-        // Resort immediately after marking error
-        _sortFilesBySize();
+        // Don't call _updateTotalSize() here - let timer handle it
         return;
       }
 
@@ -161,11 +189,9 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
           _hasPermissionIssues = true;
         }
       });
-      _updateTotalSize();
-      // Resort immediately after calculating folder size
-      _sortFilesBySize();
-    } catch (e) {
-      // Handle any type of exception (FileSystemException, PathAccessException, etc.)
+      // Don't call _updateTotalSize() here - let timer handle it
+    } on PathAccessException catch (e) {
+      // Handle PathAccessException specifically (common on macOS)
       if (!_isExpectedPermissionError(directory.path, e.toString())) {
         print(
             'Error calculating size for directory: ${directory.path}, error: $e');
@@ -177,9 +203,35 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
         _errorMessages[directory.path] = "Permission denied";
         _hasPermissionIssues = true;
       });
-      _updateTotalSize();
-      // Resort immediately after marking error
-      _sortFilesBySize();
+      // Don't call _updateTotalSize() here - let timer handle it
+    } on FileSystemException catch (e) {
+      // Handle FileSystemException (including subclasses)
+      if (!_isExpectedPermissionError(directory.path, e.toString())) {
+        print(
+            'Error calculating size for directory: ${directory.path}, error: $e');
+      }
+      if (!mounted) return;
+      setState(() {
+        _folderSizes[directory.path] = -1; // Indicate error
+        _calculatingStatus[directory.path] = false;
+        _errorMessages[directory.path] = "Permission denied";
+        _hasPermissionIssues = true;
+      });
+      // Don't call _updateTotalSize() here - let timer handle it
+    } catch (e) {
+      // Handle any other type of exception
+      if (!_isExpectedPermissionError(directory.path, e.toString())) {
+        print(
+            'Error calculating size for directory: ${directory.path}, error: $e');
+      }
+      if (!mounted) return;
+      setState(() {
+        _folderSizes[directory.path] = -1; // Indicate error
+        _calculatingStatus[directory.path] = false;
+        _errorMessages[directory.path] = "Permission denied";
+        _hasPermissionIssues = true;
+      });
+      // Don't call _updateTotalSize() here - let timer handle it
     }
   }
 
@@ -199,9 +251,7 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
         _fileSizes[file.path] = size;
         _calculatingStatus[file.path] = false;
       });
-      _updateTotalSize();
-      // Resort immediately after calculating each file size
-      _sortFilesBySize();
+      // Don't call _updateTotalSize() here - let timer handle it
     } on FileSystemException catch (e) {
       print('Error calculating size for file: ${file.path}, error: $e');
       if (!mounted) return;
@@ -211,7 +261,7 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
         _errorMessages[file.path] = "Permission denied";
         _hasPermissionIssues = true;
       });
-      _updateTotalSize();
+      // Don't call _updateTotalSize() here - let timer handle it
     }
   }
 
@@ -233,23 +283,17 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
             totalSize += fileSize;
             accessibleFiles++;
             
-            // Update partial size and trigger UI update
-            if (mounted) {
-              setState(() {
-                _partialSizes[dirPath] = totalSize;
-              });
-              _updateTotalSize();
-              
-              // Resort every 50 files to avoid too frequent UI updates
-              if (accessibleFiles % 50 == 0) {
-                _sortFilesBySize();
-              }
-            }
-
+            // Update partial size but don't trigger UI update here
+            _partialSizes[dirPath] = totalSize;
+            
             // Add a small delay to make the progress visible for small directories
             if (accessibleFiles % 10 == 0) {
               await Future.delayed(const Duration(milliseconds: 1));
             }
+          } on PathAccessException {
+            // Don't print permission errors for individual files as they're expected
+            hasPermissionError = true;
+            // Continue processing other files instead of failing completely
           } on FileSystemException {
             // Don't print permission errors for individual files as they're expected
             hasPermissionError = true;
@@ -270,6 +314,13 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
         return -1; // Indicate complete permission issues
       }
       return totalSize;
+    } on PathAccessException catch (e) {
+      // Handle PathAccessException specifically (common on macOS)
+      if (!_isExpectedPermissionError(directory.path, e.toString())) {
+        print(
+            'Error listing directory for size calculation: ${directory.path}, error: $e');
+      }
+      return -1;
     } on FileSystemException catch (e) {
       // Only print errors for specific cases, not common permission denials
       if (!_isExpectedPermissionError(directory.path, e.toString())) {
@@ -278,7 +329,7 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
       }
       return -1;
     } catch (e) {
-      // Handle other types of errors (like PathAccessException)
+      // Handle other types of errors
       if (!_isExpectedPermissionError(directory.path, e.toString())) {
         print(
             'Error listing directory for size calculation: ${directory.path}, error: $e');
@@ -287,7 +338,7 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
     }
   }
 
-  void _updateTotalSize() {
+  void _updateTotalSizeAndUI() {
     int total = 0;
 
     // Add all folder sizes
@@ -314,8 +365,13 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
       _isCalculatingTotalSize = isStillCalculating;
     });
 
-    // If we just finished calculating (was calculating but now not), sort by size
+    // Sort by size when data changes significantly or when calculation is finished
+    _sortFilesBySize();
+
+    // If we just finished calculating (was calculating but now not), stop the timer
     if (wasCalculating && !isStillCalculating) {
+      _stopUIUpdateTimer();
+      // Do a final update and sort
       _sortFilesBySize();
     }
   }
@@ -571,7 +627,9 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
       '/dev',
       '/Library/Application Support/Apple',
       '/Library/Application Support/com.apple',
+      '/Library/Application Support/Apple/ParentalControls',
       '/System/Library',
+      '/System/Library/DirectoryServices',
       '/Applications/flutter',
       '/Applications/Xcode',
       '/private',
@@ -614,7 +672,9 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
     // Check for common permission error messages
     final isPermissionError = errorMessage.contains('Permission denied') ||
         errorMessage.contains('Operation not permitted') ||
-        errorMessage.contains('PathAccessException');
+        errorMessage.contains('PathAccessException') ||
+        errorMessage.contains('Not a directory') ||
+        errorMessage.contains('Directory listing failed');
 
     return (isExpectedPath ||
             isAppBundle ||
