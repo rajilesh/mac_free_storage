@@ -2,7 +2,7 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
-			"label": "Run Mac Free Storage App",
+			"label": "Run Free Up Storage App",
 			"type": "shell",
 			"command": "flutter",
 			"args": [
