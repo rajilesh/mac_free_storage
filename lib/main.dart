@@ -700,43 +700,31 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
     int calculatingFolders = 0;
     int partialSizeCount = 0;
 
-    // Add all folder sizes (only if calculation is complete)
-    for (final entry in _folderSizes.entries) {
-      final path = entry.key;
-      final size = entry.value;
-      final isCalculating = _calculatingStatus[path] ?? false;
-
-      if (!isCalculating) {
-        completedFolders++;
-        // Only add if calculation is complete and size is positive
+    // Add sizes for all files and folders currently in the list
+    for (final entity in _files) {
+      final path = entity.path;
+      if (entity is Directory) {
+        final isCalculating = _calculatingStatus[path] ?? false;
+        if (isCalculating) {
+          // If calculating, use the partial size
+          final partialSize = _partialSizes[path] ?? 0;
+          total += partialSize;
+          if (partialSize > 0) partialSizeCount++;
+          calculatingFolders++;
+        } else {
+          // If complete, use the final size
+          final size = _folderSizes[path] ?? 0;
+          if (size > 0) {
+            total += size;
+          }
+          completedFolders++;
+        }
+      } else if (entity is File) {
+        // For files, use the final size
+        final size = _fileSizes[path] ?? 0;
         if (size > 0) {
           total += size;
         }
-      } else {
-        calculatingFolders++;
-      }
-    }
-    
-    // Add all file sizes (only if calculation is complete)
-    for (final entry in _fileSizes.entries) {
-      final path = entry.key;
-      final size = entry.value;
-      // Only add if calculation is complete (not calculating) and size is positive
-      if (size > 0 && !(_calculatingStatus[path] ?? false)) {
-        total += size;
-      }
-    }
-    
-    // Add partial sizes for folders still being calculated (avoid double counting)
-    for (final entry in _partialSizes.entries) {
-      final path = entry.key;
-      final partialSize = entry.value;
-      // Only add partial size if the folder is still calculating and we don't have a final size yet
-      if (partialSize > 0 &&
-          (_calculatingStatus[path] ?? false) &&
-          !_folderSizes.containsKey(path)) {
-        total += partialSize;
-        partialSizeCount++;
       }
     }
 
