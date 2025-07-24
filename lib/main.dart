@@ -55,7 +55,7 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
   @override
   void initState() {
     super.initState();
-    _getFolderContents();
+    _checkAndRequestPermissions();
   }
 
   @override
@@ -253,6 +253,157 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
     };
   }
 
+  // Check and request necessary permissions on app start
+  Future<void> _checkAndRequestPermissions() async {
+    if (!Platform.isMacOS) {
+      _getFolderContents();
+      return;
+    }
+
+    // Test if we have basic file system access
+    final hasBasicAccess = await _testBasicFileAccess();
+    final hasFullDiskAccess = await _testFullDiskAccess();
+
+    if (!hasBasicAccess || !hasFullDiskAccess) {
+      _showPermissionRequestDialog(hasBasicAccess, hasFullDiskAccess);
+    } else {
+      _getFolderContents();
+    }
+  }
+
+  // Test basic file system access
+  Future<bool> _testBasicFileAccess() async {
+    try {
+      final testDir = Directory('/Applications');
+      await testDir.list(recursive: false, followLinks: false).take(1).toList();
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // Test Full Disk Access by trying to access a protected directory
+  Future<bool> _testFullDiskAccess() async {
+    try {
+      // Try to access a directory that requires Full Disk Access
+      final testDir = Directory('/Library/Application Support');
+      await testDir.list(recursive: false, followLinks: false).take(1).toList();
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // Show permission request dialog with specific guidance
+  void _showPermissionRequestDialog(
+      bool hasBasicAccess, bool hasFullDiskAccess) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.security, color: Colors.red),
+              SizedBox(width: 8),
+              Text('Permissions Required'),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'This app needs access to your files to calculate storage usage.',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.red.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.red.shade200),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.warning,
+                            size: 16, color: Colors.red.shade600),
+                        const SizedBox(width: 4),
+                        Text(
+                          'Required: Full Disk Access',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: Colors.red.shade600,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'Without this permission, many files and applications will show "Access denied".',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'To grant permissions:',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                '1. Click "Open System Settings" below\n'
+                '2. Go to Privacy & Security → Full Disk Access\n'
+                '3. Click the lock icon and enter your password\n'
+                '4. Enable the toggle for this app\n'
+                '5. Return to this app and click "Continue"',
+                style: TextStyle(fontSize: 14),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.blue.shade50,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: const Text(
+                  '💡 Tip: After granting permission, restart this app for best results.',
+                  style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                // Continue with limited access
+                _getFolderContents();
+              },
+              child: const Text('Continue with Limited Access'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                _openSystemPreferences();
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.blue,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Open System Settings'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   Future<void> _calculateAndStoreFolderSize(Directory directory) async {
     // Check if already cached
     if (_globalFolderSizeCache.containsKey(directory.path)) {
@@ -398,6 +549,16 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
       // Initialize partial size
       _partialSizes[dirPath] = 0;
 
+      // Special handling for .app bundles - try to get bundle size first
+      if (dirPath.endsWith('.app')) {
+        final bundleSize = await _calculateAppBundleSize(directory);
+        if (bundleSize >= 0) {
+          _partialSizes.remove(dirPath);
+          return bundleSize;
+        }
+        // If bundle size calculation fails, continue with regular method
+      }
+
       await for (final entity
           in directory.list(recursive: true, followLinks: false)) {
         if (entity is File) {
@@ -410,19 +571,16 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
             _partialSizes[dirPath] = totalSize;
             
             // Add a small delay to make the progress visible for small directories
-            if (accessibleFiles % 10 == 0) {
+            if (accessibleFiles % 100 == 0) {
               await Future.delayed(const Duration(milliseconds: 1));
             }
           } on PathAccessException {
-            // Don't print permission errors for individual files as they're expected
             hasPermissionError = true;
             // Continue processing other files instead of failing completely
           } on FileSystemException {
-            // Don't print permission errors for individual files as they're expected
             hasPermissionError = true;
             // Continue processing other files instead of failing completely
           } catch (e) {
-            // Handle other unexpected errors
             hasPermissionError = true;
           }
         }
@@ -457,6 +615,49 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
         print(
             'Error listing directory for size calculation: ${directory.path}, error: $e');
       }
+      return -1;
+    }
+  }
+
+  // Special method to calculate app bundle size using system tools
+  Future<int> _calculateAppBundleSize(Directory appBundle) async {
+    try {
+      // Use 'du' command to get app bundle size - this often works better than recursive listing
+      final result = await Process.run(
+        'du',
+        ['-sk', appBundle.path],
+        runInShell: false,
+      );
+
+      if (result.exitCode == 0) {
+        final output = result.stdout.toString().trim();
+        final sizeStr = output.split('\t')[0];
+        final sizeInKB = int.tryParse(sizeStr);
+        if (sizeInKB != null) {
+          return sizeInKB * 1024; // Convert KB to bytes
+        }
+      }
+
+      // Fallback: try to get size using Finder's method via AppleScript
+      final appleScriptResult = await Process.run(
+        'osascript',
+        [
+          '-e',
+          'tell application "Finder" to get size of (POSIX file "${appBundle.path}" as alias)'
+        ],
+      );
+
+      if (appleScriptResult.exitCode == 0) {
+        final sizeStr = appleScriptResult.stdout.toString().trim();
+        final size = int.tryParse(sizeStr);
+        if (size != null && size > 0) {
+          return size;
+        }
+      }
+
+      return -1; // Indicate we couldn't get the size
+    } catch (e) {
+      print('Error calculating app bundle size for ${appBundle.path}: $e');
       return -1;
     }
   }
@@ -589,6 +790,7 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
   void _showPermissionDialog(String path, String error) {
     final isSystemDir = _isSystemProtectedDirectory(path);
     final permissionType = _getPermissionType(path);
+    final isAppBundle = path.endsWith('.app');
     
     showDialog(
       context: context,
@@ -596,7 +798,8 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
         return AlertDialog(
           title: Row(
             children: [
-              const Icon(Icons.security, color: Colors.orange),
+              Icon(Icons.security,
+                  color: isAppBundle ? Colors.red : Colors.orange),
               const SizedBox(width: 8),
               const Expanded(child: Text('Permission Required')),
             ],
@@ -609,40 +812,75 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
               const SizedBox(height: 8),
               Text('Error: $error'),
               const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.blue.shade50,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.blue.shade200),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Icon(Icons.info_outline,
-                            size: 16, color: Colors.blue.shade600),
-                        const SizedBox(width: 4),
-                        Text(
-                          'Required Permission: $permissionType',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: Colors.blue.shade600,
+              if (isAppBundle) ...[
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.red.shade50,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.red.shade200),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(Icons.apps,
+                              size: 16, color: Colors.red.shade600),
+                          const SizedBox(width: 4),
+                          Text(
+                            'Application Bundle Access',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Colors.red.shade600,
+                            ),
                           ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      isSystemDir
-                          ? 'This is a protected system directory. Access may be restricted even with Full Disk Access.'
-                          : 'This directory requires specific permissions to access.',
-                      style: const TextStyle(fontSize: 12),
-                    ),
-                  ],
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      const Text(
+                        'Some application files are protected by macOS. Full Disk Access is required to calculate complete app sizes.',
+                        style: TextStyle(fontSize: 12),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
+              ] else ...[
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.blue.shade50,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.blue.shade200),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(Icons.info_outline,
+                              size: 16, color: Colors.blue.shade600),
+                          const SizedBox(width: 4),
+                          Text(
+                            'Required Permission: $permissionType',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Colors.blue.shade600,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        isSystemDir
+                            ? 'This is a protected system directory. Full Disk Access is required.'
+                            : 'This directory requires specific permissions to access.',
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
               const SizedBox(height: 12),
               const Text(
                 'To allow this app to access files and folders:',
@@ -650,19 +888,17 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
               ),
               const SizedBox(height: 8),
               Text(
-                permissionType == 'Full Disk Access'
-                    ? '1. Open System Preferences → Security & Privacy\n'
-                        '2. Click the Privacy tab\n'
-                        '3. Select "Full Disk Access" from the list\n'
-                        '4. Click the lock to make changes\n'
-                        '5. Add this application to the list'
-                    : '1. Open System Preferences → Security & Privacy\n'
-                        '2. Click the Privacy tab\n'
-                        '3. Select "$permissionType" from the list\n'
-                        '4. Click the lock to make changes\n'
-                        '5. Add this application to the list\n\n'
-                        'Or enable "Full Disk Access" for complete access.',
-                style: const TextStyle(fontSize: 14),
+                'macOS Sonoma (14.0+):\n'
+                '1. Open System Settings → Privacy & Security\n'
+                '2. Click "Full Disk Access"\n'
+                '3. Enable the toggle for this app\n\n'
+                'macOS Monterey/Ventura (12.0-13.x):\n'
+                '1. Open System Preferences → Security & Privacy\n'
+                '2. Click the Privacy tab\n'
+                '3. Select "Full Disk Access" from the list\n'
+                '4. Click the lock to make changes\n'
+                '5. Add this application to the list',
+                style: const TextStyle(fontSize: 12),
               ),
             ],
           ),
@@ -674,9 +910,21 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
             TextButton(
               onPressed: () {
                 Navigator.of(context).pop();
+                // Recheck permissions after user potentially granted them
+                _recheckPermissions();
+              },
+              child: const Text('Recheck Permissions'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.of(context).pop();
                 _openSystemPreferences();
               },
-              child: const Text('Open System Preferences'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.blue,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Open System Settings'),
             ),
           ],
         );
@@ -684,30 +932,95 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
     );
   }
 
+  // Recheck permissions and refresh if needed
+  Future<void> _recheckPermissions() async {
+    final hasBasicAccess = await _testBasicFileAccess();
+    final hasFullDiskAccess = await _testFullDiskAccess();
+
+    if (hasBasicAccess && hasFullDiskAccess) {
+      // Clear cache and refresh
+      clearCache();
+      _getFolderContents();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('✓ Permissions granted! Refreshing data...'),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+                '⚠️ Full Disk Access still required for complete functionality'),
+            backgroundColor: Colors.orange,
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+    }
+  }
+
   Future<void> _openSystemPreferences() async {
     try {
       if (Platform.isMacOS) {
-        final uri = Uri.parse(
+        // For macOS Sonoma 14.0+ (System Settings)
+        final systemSettingsResult = await Process.run(
+          'open',
+          [
+            '-b',
+            'com.apple.systempreferences',
+            '/System/Library/PreferencePanes/Security.prefPane'
+          ],
+        );
+
+        if (systemSettingsResult.exitCode == 0) {
+          return;
+        }
+
+        // Fallback for older macOS versions - try new System Settings first
+        var uri = Uri.parse(
             'x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles');
         if (await canLaunchUrl(uri)) {
           await launchUrl(uri);
-        } else {
-          // Fallback to general security preferences
-          final fallbackUri = Uri.parse(
-              'x-apple.systempreferences:com.apple.preference.security');
-          if (await canLaunchUrl(fallbackUri)) {
-            await launchUrl(fallbackUri);
-          }
+          return;
+        }
+        
+        // Try opening System Settings/Preferences directly
+        final openResult = await Process.run(
+            'open', ['/System/Applications/System Preferences.app']);
+        if (openResult.exitCode != 0) {
+          // Final fallback - try to open System Settings (macOS 13+)
+          await Process.run(
+              'open', ['/System/Applications/System Settings.app']);
         }
       }
     } catch (e) {
       print('Error opening system preferences: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-                'Please manually open System Preferences > Security & Privacy > Privacy > Full Disk Access'),
-            duration: Duration(seconds: 5),
+          SnackBar(
+            content: const Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Please manually open System Settings/Preferences:'),
+                SizedBox(height: 4),
+                Text('Privacy & Security → Full Disk Access',
+                    style: TextStyle(fontWeight: FontWeight.bold)),
+              ],
+            ),
+            duration: const Duration(seconds: 5),
+            action: SnackBarAction(
+              label: 'Copy Path',
+              onPressed: () {
+                // You could implement clipboard copy here if needed
+              },
+            ),
           ),
         );
       }
@@ -884,6 +1197,88 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
     return 'File Access';
   }
 
+  Future<void> _clearCaches() async {
+    // Show loading dialog
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return const AlertDialog(
+          title: Text('Clearing Caches'),
+          content: Row(
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(width: 16),
+              Text('Clearing system and user caches...'),
+            ],
+          ),
+        );
+      },
+    );
+
+    try {
+      // Clear system caches (requires sudo)
+      final systemResult = await Process.run(
+        'osascript',
+        [
+          '-e',
+          'do shell script "rm -rf /Library/Caches/*" with administrator privileges'
+        ],
+      );
+
+      // Clear user caches and logs
+      final userCachesResult = await Process.run(
+          'rm', ['-rf', '${Platform.environment['HOME']}/Library/Caches/*']);
+      final userLogsResult = await Process.run(
+          'rm', ['-rf', '${Platform.environment['HOME']}/Library/Logs/*']);
+
+      // Close loading dialog
+      if (mounted) {
+        Navigator.of(context).pop();
+      }
+
+      // Show result
+      if (mounted) {
+        final bool success = systemResult.exitCode == 0 &&
+            userCachesResult.exitCode == 0 &&
+            userLogsResult.exitCode == 0;
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(success
+                ? 'Caches cleared successfully!'
+                : 'Some caches could not be cleared'),
+            backgroundColor: success ? Colors.green : Colors.orange,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+
+        // Refresh the current view to show updated sizes
+        if (success) {
+          // Clear our internal cache as well since sizes may have changed
+          clearCache();
+          _getFolderContents();
+        }
+      }
+    } catch (e) {
+      // Close loading dialog
+      if (mounted) {
+        Navigator.of(context).pop();
+      }
+
+      print('Error clearing caches: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error clearing caches: ${e.toString()}'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -896,6 +1291,74 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
               )
             : null,
         actions: [
+          // Permission recheck button
+          if (Platform.isMacOS)
+            IconButton(
+              icon: Icon(
+                Icons.verified_user,
+                color: _hasPermissionIssues ? Colors.red : Colors.green,
+              ),
+              onPressed: _recheckPermissions,
+              tooltip: _hasPermissionIssues
+                  ? 'Recheck Permissions (Issues detected)'
+                  : 'Recheck Permissions (All good)',
+            ),
+          // Cache clear button (only show in root)
+          if (widget.folderPath == null || widget.folderPath == '/')
+            IconButton(
+              icon: const Icon(Icons.cleaning_services, color: Colors.red),
+              onPressed: () {
+                showDialog(
+                  context: context,
+                  builder: (BuildContext context) {
+                    return AlertDialog(
+                      title: const Row(
+                        children: [
+                          Icon(Icons.cleaning_services, color: Colors.red),
+                          SizedBox(width: 8),
+                          Text('Clear Caches'),
+                        ],
+                      ),
+                      content: const Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('This will clear:'),
+                          SizedBox(height: 8),
+                          Text('• System caches (/Library/Caches/)'),
+                          Text('• User caches (~/Library/Caches/)'),
+                          Text('• User logs (~/Library/Logs/)'),
+                          SizedBox(height: 12),
+                          Text(
+                            'Administrator privileges will be required for system caches.',
+                            style: TextStyle(
+                                fontSize: 12, fontStyle: FontStyle.italic),
+                          ),
+                        ],
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.of(context).pop(),
+                          child: const Text('Cancel'),
+                        ),
+                        ElevatedButton(
+                          onPressed: () {
+                            Navigator.of(context).pop();
+                            _clearCaches();
+                          },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.red,
+                            foregroundColor: Colors.white,
+                          ),
+                          child: const Text('Clear Caches'),
+                        ),
+                      ],
+                    );
+                  },
+                );
+              },
+              tooltip: 'Clear System and User Caches',
+            ),
           // Toggle for system directories (only show in root)
           if (widget.folderPath == null || widget.folderPath == '/')
             IconButton(
@@ -1035,6 +1498,10 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
                 String sizeText = '';
                 if (hasError) {
                   sizeText = _errorMessages[file.path]!;
+                  // Add specific message for app bundles
+                  if (file.path.endsWith('.app')) {
+                    sizeText = 'Requires Full Disk Access';
+                  }
                 } else if (isDirectory) {
                   final size = _folderSizes[file.path];
                   final partialSize = _partialSizes[file.path];
