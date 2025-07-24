@@ -46,6 +46,7 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
   bool _hasPermissionIssues = false;
   bool _showSystemDirectories = false; // Toggle for showing system directories
   Timer? _uiUpdateTimer;
+  bool _needsResorting = false; // Flag to track if sorting is needed
   
   // Static cache to persist across widget rebuilds and navigation
   static final Map<String, int> _globalFolderSizeCache = {};
@@ -68,6 +69,7 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
     setState(() {
       _isCalculatingTotalSize = true;
       _hasPermissionIssues = false;
+      _needsResorting = false; // Reset sorting flag
       // Clear previous data
       _folderSizes.clear();
       _fileSizes.clear();
@@ -225,7 +227,7 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
 
   void _startUIUpdateTimer() {
     _uiUpdateTimer?.cancel();
-    _uiUpdateTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+    _uiUpdateTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
       if (mounted) {
         _updateTotalSizeAndUI();
       }
@@ -420,12 +422,13 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
       } catch (e) {
         // If we can't even list the directory, mark as permission error
         if (!mounted) return;
-        setState(() {
-          _folderSizes[directory.path] = -1;
-          _calculatingStatus[directory.path] = false;
-          _errorMessages[directory.path] = "Permission denied";
-          _hasPermissionIssues = true;
-        });
+        
+        // Update data without triggering immediate UI update
+        _folderSizes[directory.path] = -1;
+        _calculatingStatus[directory.path] = false;
+        _errorMessages[directory.path] = "Permission denied";
+        _hasPermissionIssues = true;
+        
         // Cache the error result
         _globalFolderSizeCache[directory.path] = -1;
         _globalErrorCache[directory.path] = "Permission denied";
@@ -434,14 +437,19 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
 
       final size = await _calculateFolderSize(directory);
       if (!mounted) return;
-      setState(() {
-        _folderSizes[directory.path] = size;
-        _calculatingStatus[directory.path] = false;
-        if (size < 0) {
-          _errorMessages[directory.path] = "Access denied";
-          _hasPermissionIssues = true;
-        }
-      });
+      
+      // Update data without triggering immediate UI update
+      _folderSizes[directory.path] = size;
+      _calculatingStatus[directory.path] = false;
+      // Ensure partial size is cleared when calculation completes
+      _partialSizes.remove(directory.path);
+      if (size < 0) {
+        _errorMessages[directory.path] = "Access denied";
+        _hasPermissionIssues = true;
+      }
+      
+      // Mark that we need resorting since size data changed
+      _needsResorting = true;
       
       // Cache the result
       _globalFolderSizeCache[directory.path] = size;
@@ -455,12 +463,14 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
             'Error calculating size for directory: ${directory.path}, error: $e');
       }
       if (!mounted) return;
-      setState(() {
-        _folderSizes[directory.path] = -1; // Indicate error
-        _calculatingStatus[directory.path] = false;
-        _errorMessages[directory.path] = "Permission denied";
-        _hasPermissionIssues = true;
-      });
+      
+      // Update data without triggering immediate UI update
+      _folderSizes[directory.path] = -1; // Indicate error
+      _calculatingStatus[directory.path] = false;
+      _partialSizes.remove(directory.path); // Clean up partial size
+      _errorMessages[directory.path] = "Permission denied";
+      _hasPermissionIssues = true;
+      
       // Cache the error result
       _globalFolderSizeCache[directory.path] = -1;
       _globalErrorCache[directory.path] = "Permission denied";
@@ -471,12 +481,14 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
             'Error calculating size for directory: ${directory.path}, error: $e');
       }
       if (!mounted) return;
-      setState(() {
-        _folderSizes[directory.path] = -1; // Indicate error
-        _calculatingStatus[directory.path] = false;
-        _errorMessages[directory.path] = "Permission denied";
-        _hasPermissionIssues = true;
-      });
+      
+      // Update data without triggering immediate UI update
+      _folderSizes[directory.path] = -1; // Indicate error
+      _calculatingStatus[directory.path] = false;
+      _partialSizes.remove(directory.path); // Clean up partial size
+      _errorMessages[directory.path] = "Permission denied";
+      _hasPermissionIssues = true;
+      
       // Cache the error result
       _globalFolderSizeCache[directory.path] = -1;
       _globalErrorCache[directory.path] = "Permission denied";
@@ -487,12 +499,14 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
             'Error calculating size for directory: ${directory.path}, error: $e');
       }
       if (!mounted) return;
-      setState(() {
-        _folderSizes[directory.path] = -1; // Indicate error
-        _calculatingStatus[directory.path] = false;
-        _errorMessages[directory.path] = "Permission denied";
-        _hasPermissionIssues = true;
-      });
+      
+      // Update data without triggering immediate UI update
+      _folderSizes[directory.path] = -1; // Indicate error
+      _calculatingStatus[directory.path] = false;
+      _partialSizes.remove(directory.path); // Clean up partial size
+      _errorMessages[directory.path] = "Permission denied";
+      _hasPermissionIssues = true;
+      
       // Cache the error result
       _globalFolderSizeCache[directory.path] = -1;
       _globalErrorCache[directory.path] = "Permission denied";
@@ -516,22 +530,25 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
       }
 
       if (!mounted) return;
-      setState(() {
-        _fileSizes[file.path] = size;
-        _calculatingStatus[file.path] = false;
-      });
+      
+      // Update data without triggering immediate UI update
+      _fileSizes[file.path] = size;
+      _calculatingStatus[file.path] = false;
+      
+      // Mark that we need resorting since size data changed
+      _needsResorting = true;
       
       // Cache the result
       _globalFileSizeCache[file.path] = size;
     } on FileSystemException catch (e) {
       print('Error calculating size for file: ${file.path}, error: $e');
       if (!mounted) return;
-      setState(() {
-        _fileSizes[file.path] = -1; // Indicate error
-        _calculatingStatus[file.path] = false;
-        _errorMessages[file.path] = "Permission denied";
-        _hasPermissionIssues = true;
-      });
+      
+      // Update data without triggering immediate UI update
+      _fileSizes[file.path] = -1; // Indicate error
+      _calculatingStatus[file.path] = false;
+      _errorMessages[file.path] = "Permission denied";
+      _hasPermissionIssues = true;
       
       // Cache the error result
       _globalFileSizeCache[file.path] = -1;
@@ -544,6 +561,7 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
       int totalSize = 0;
       bool hasPermissionError = false;
       int accessibleFiles = 0;
+      int lastSortTriggerSize = 0; // Track when to trigger resorting
       final String dirPath = directory.path;
 
       // Initialize partial size
@@ -553,6 +571,7 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
       if (dirPath.endsWith('.app')) {
         final bundleSize = await _calculateAppBundleSize(directory);
         if (bundleSize >= 0) {
+          // Clear partial size when done
           _partialSizes.remove(dirPath);
           return bundleSize;
         }
@@ -567,12 +586,19 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
             totalSize += fileSize;
             accessibleFiles++;
             
-            // Update partial size but don't trigger UI update here
+            // Update partial size without immediate UI update - let the timer handle it
             _partialSizes[dirPath] = totalSize;
             
-            // Add a small delay to make the progress visible for small directories
-            if (accessibleFiles % 100 == 0) {
-              await Future.delayed(const Duration(milliseconds: 1));
+            // Trigger resorting when size changes significantly (every 10MB)
+            if ((totalSize - lastSortTriggerSize) > 10 * 1024 * 1024) {
+              _needsResorting = true;
+              lastSortTriggerSize = totalSize;
+            }
+
+            // Add a small delay every 200 files to make progress visible and allow UI updates
+            // Reduced frequency to improve performance
+            if (accessibleFiles % 200 == 0) {
+              await Future.delayed(const Duration(milliseconds: 2));
             }
           } on PathAccessException {
             hasPermissionError = true;
@@ -586,7 +612,7 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
         }
       }
 
-      // Clear partial size when done
+      // Clear partial size when calculation is complete
       _partialSizes.remove(dirPath);
 
       // If we have some accessible files, return the partial size
@@ -601,6 +627,8 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
         print(
             'Error listing directory for size calculation: ${directory.path}, error: $e');
       }
+      // Clear partial size on error
+      _partialSizes.remove(directory.path);
       return -1;
     } on FileSystemException catch (e) {
       // Only print errors for specific cases, not common permission denials
@@ -608,6 +636,8 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
         print(
             'Error listing directory for size calculation: ${directory.path}, error: $e');
       }
+      // Clear partial size on error
+      _partialSizes.remove(directory.path);
       return -1;
     } catch (e) {
       // Handle other types of errors
@@ -615,6 +645,8 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
         print(
             'Error listing directory for size calculation: ${directory.path}, error: $e');
       }
+      // Clear partial size on error
+      _partialSizes.remove(directory.path);
       return -1;
     }
   }
@@ -664,39 +696,85 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
 
   void _updateTotalSizeAndUI() {
     int total = 0;
+    int completedFolders = 0;
+    int calculatingFolders = 0;
+    int partialSizeCount = 0;
 
-    // Add all folder sizes
-    for (final size in _folderSizes.values) {
-      if (size > 0) total += size;
+    // Add all folder sizes (only if calculation is complete)
+    for (final entry in _folderSizes.entries) {
+      final path = entry.key;
+      final size = entry.value;
+      final isCalculating = _calculatingStatus[path] ?? false;
+
+      if (!isCalculating) {
+        completedFolders++;
+        // Only add if calculation is complete and size is positive
+        if (size > 0) {
+          total += size;
+        }
+      } else {
+        calculatingFolders++;
+      }
     }
     
-    // Add all file sizes
-    for (final size in _fileSizes.values) {
-      if (size > 0) total += size;
+    // Add all file sizes (only if calculation is complete)
+    for (final entry in _fileSizes.entries) {
+      final path = entry.key;
+      final size = entry.value;
+      // Only add if calculation is complete (not calculating) and size is positive
+      if (size > 0 && !(_calculatingStatus[path] ?? false)) {
+        total += size;
+      }
     }
     
-    // Add partial sizes for folders still being calculated
-    for (final size in _partialSizes.values) {
-      if (size > 0) total += size;
+    // Add partial sizes for folders still being calculated (avoid double counting)
+    for (final entry in _partialSizes.entries) {
+      final path = entry.key;
+      final partialSize = entry.value;
+      // Only add partial size if the folder is still calculating and we don't have a final size yet
+      if (partialSize > 0 &&
+          (_calculatingStatus[path] ?? false) &&
+          !_folderSizes.containsKey(path)) {
+        total += partialSize;
+        partialSizeCount++;
+      }
     }
 
     final wasCalculating = _isCalculatingTotalSize;
     final isStillCalculating =
         _calculatingStatus.values.any((calculating) => calculating);
 
+    // Debug logging when total changes significantly
+    if ((_totalDirectorySize - total).abs() > 1024 * 1024) {
+      // Log if change > 1MB
+      print(
+          'Total size change: ${_formatBytes(_totalDirectorySize, 2)} → ${_formatBytes(total, 2)}');
+      print(
+          '  Completed folders: $completedFolders, Calculating: $calculatingFolders, Partial: $partialSizeCount');
+    }
+
     setState(() {
-      _totalDirectorySize = total;
+      // Only update if the new total is different to avoid unnecessary rebuilds
+      if (_totalDirectorySize != total) {
+        _totalDirectorySize = total;
+      }
       _isCalculatingTotalSize = isStillCalculating;
     });
 
-    // Sort regularly during calculation to show updated order as sizes are computed
-    _sortFilesBySize();
+    // Only sort if data has changed significantly or we need resorting
+    if (_needsResorting || (_isCalculatingTotalSize && _files.length < 50)) {
+      // For small lists, sort more frequently for better UX
+      // For large lists, rely on the needsResorting flag
+      _sortFilesBySize();
+      _needsResorting = false;
+    }
 
     // When calculation is finished, stop the timer and do a final sort
     if (wasCalculating && !isStillCalculating) {
       _stopUIUpdateTimer();
       print('All calculations complete - doing final sort');
       _sortFilesBySize();
+      _needsResorting = false;
     }
   }
 
@@ -1217,44 +1295,168 @@ class _FileExplorerPageState extends State<FileExplorerPage> {
     );
 
     try {
-      // Clear system caches (requires sudo)
-      final systemResult = await Process.run(
-        'osascript',
-        [
-          '-e',
-          'do shell script "rm -rf /Library/Caches/*" with administrator privileges'
-        ],
-      );
+      final List<String> results = [];
+      int successCount = 0;
+      int totalOperations = 3;
 
-      // Clear user caches and logs
-      final userCachesResult = await Process.run(
-          'rm', ['-rf', '${Platform.environment['HOME']}/Library/Caches/*']);
-      final userLogsResult = await Process.run(
-          'rm', ['-rf', '${Platform.environment['HOME']}/Library/Logs/*']);
+      // Clear system caches (requires sudo)
+      try {
+        final systemResult = await Process.run(
+          'osascript',
+          [
+            '-e',
+            'do shell script "find /Library/Caches -mindepth 1 -delete 2>/dev/null || true" with administrator privileges'
+          ],
+        );
+        if (systemResult.exitCode == 0) {
+          results.add('✓ System caches cleared');
+          successCount++;
+        } else {
+          results.add('⚠️ System caches: ${systemResult.stderr}');
+        }
+      } catch (e) {
+        results.add('❌ System caches: Permission denied or canceled');
+      }
+
+      // Clear user caches
+      try {
+        final userHome = Platform.environment['HOME'] ?? '';
+        if (userHome.isNotEmpty) {
+          final userCachesResult = await Process.run(
+            'find',
+            ['$userHome/Library/Caches', '-mindepth', '1', '-delete'],
+            runInShell: false,
+          );
+          if (userCachesResult.exitCode == 0) {
+            results.add('✓ User caches cleared');
+            successCount++;
+          } else {
+            results.add('⚠️ User caches: Some files could not be deleted');
+          }
+        } else {
+          results.add('❌ User caches: Could not determine home directory');
+        }
+      } catch (e) {
+        results.add('❌ User caches: ${e.toString()}');
+      }
+
+      // Clear user logs
+      try {
+        final userHome = Platform.environment['HOME'] ?? '';
+        if (userHome.isNotEmpty) {
+          final userLogsResult = await Process.run(
+            'find',
+            ['$userHome/Library/Logs', '-mindepth', '1', '-delete'],
+            runInShell: false,
+          );
+          if (userLogsResult.exitCode == 0) {
+            results.add('✓ User logs cleared');
+            successCount++;
+          } else {
+            results.add('⚠️ User logs: Some files could not be deleted');
+          }
+        } else {
+          results.add('❌ User logs: Could not determine home directory');
+        }
+      } catch (e) {
+        results.add('❌ User logs: ${e.toString()}');
+      }
 
       // Close loading dialog
       if (mounted) {
         Navigator.of(context).pop();
       }
 
-      // Show result
+      // Show detailed results
       if (mounted) {
-        final bool success = systemResult.exitCode == 0 &&
-            userCachesResult.exitCode == 0 &&
-            userLogsResult.exitCode == 0;
+        final bool allSuccess = successCount == totalOperations;
+        final bool partialSuccess = successCount > 0;
 
+        // Show results dialog
+        showDialog(
+          context: context,
+          builder: (BuildContext context) {
+            return AlertDialog(
+              title: Row(
+                children: [
+                  Icon(
+                    allSuccess
+                        ? Icons.check_circle
+                        : partialSuccess
+                            ? Icons.warning
+                            : Icons.error,
+                    color: allSuccess
+                        ? Colors.green
+                        : partialSuccess
+                            ? Colors.orange
+                            : Colors.red,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(allSuccess
+                      ? 'Success'
+                      : partialSuccess
+                          ? 'Partial Success'
+                          : 'Failed'),
+                ],
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                      '$successCount of $totalOperations operations completed:'),
+                  const SizedBox(height: 12),
+                  ...results.map((result) => Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 2),
+                        child:
+                            Text(result, style: const TextStyle(fontSize: 12)),
+                      )),
+                  if (!allSuccess) ...[
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.shade50,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: const Text(
+                        '💡 Some files may be in use or require different permissions. This is normal.',
+                        style: TextStyle(
+                            fontSize: 11, fontStyle: FontStyle.italic),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('OK'),
+                ),
+              ],
+            );
+          },
+        );
+
+        // Also show a brief snackbar
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(success
-                ? 'Caches cleared successfully!'
-                : 'Some caches could not be cleared'),
-            backgroundColor: success ? Colors.green : Colors.orange,
-            duration: const Duration(seconds: 3),
+            content: Text(allSuccess
+                ? 'All caches cleared successfully!'
+                : partialSuccess
+                    ? 'Caches partially cleared ($successCount/$totalOperations)'
+                    : 'Cache clearing failed'),
+            backgroundColor: allSuccess
+                ? Colors.green
+                : partialSuccess
+                    ? Colors.orange
+                    : Colors.red,
+            duration: const Duration(seconds: 2),
           ),
         );
 
-        // Refresh the current view to show updated sizes
-        if (success) {
+        // Refresh the current view if any operation succeeded
+        if (partialSuccess) {
           // Clear our internal cache as well since sizes may have changed
           clearCache();
           _getFolderContents();
